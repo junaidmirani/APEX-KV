@@ -9,9 +9,15 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 add_compile_options(
     -Wall -Wextra -Wpedantic
     -Wno-gnu-anonymous-struct
-    $<$<CONFIG:Release>:-O3 -march=native -DNDEBUG>
-    $<$<CONFIG:Debug>:-O0 -g -fsanitize=address,undefined>
-    $<$<CONFIG:RelWithDebInfo>:-O2 -g -march=native>
+    $<$<CONFIG:Release>:-O3>
+    $<$<CONFIG:Release>:-march=native>
+    $<$<CONFIG:Release>:-DNDEBUG>
+    $<$<CONFIG:Debug>:-O0>
+    $<$<CONFIG:Debug>:-g>
+    $<$<CONFIG:Debug>:-fsanitize=address,undefined>
+    $<$<CONFIG:RelWithDebInfo>:-O2>
+    $<$<CONFIG:RelWithDebInfo>:-g>
+    $<$<CONFIG:RelWithDebInfo>:-march=native>
 )
 add_link_options(
     $<$<CONFIG:Debug>:-fsanitize=address,undefined>
