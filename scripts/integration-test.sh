@@ -57,6 +57,18 @@ wait_for_node() {
     return 1
 }
 
+wait_for_key() {
+    # Poll until GET <key> returns <expected> on <port>, or timeout (~6s)
+    local port="$1" key="$2" expected="$3" retries=30
+    while (( retries-- > 0 )); do
+        local resp
+        resp=$(kv_cmd "${port}" "GET ${key}" 2>/dev/null || true)
+        [[ "${resp}" == "${expected}" ]] && return 0
+        sleep 0.2
+    done
+    return 1
+}
+
 cleanup() {
     echo -e "\n${YLW}Cleaning up...${RST}"
     pkill -f "kv --id.*${WAL_DIR}" 2>/dev/null || true
@@ -139,11 +151,15 @@ for key in alpha beta gamma delta epsilon; do
 done
 
 echo "  Wrote 5 keys to cluster"
-sleep 0.5   # Give Raft time to commit + apply on all nodes
+sleep 1.0   # Give Raft time to commit + apply on all nodes
 
-# Verify reads from all nodes
+# Verify reads from all nodes — poll until replication catches up (up to 6s)
 for port in 7101 7102 7103; do
-    resp=$(kv_cmd "${port}" "GET alpha")
+    if wait_for_key "${port}" "alpha" "value_alpha"; then
+        resp="value_alpha"
+    else
+        resp=$(kv_cmd "${port}" "GET alpha")
+    fi
     check "Node :${port} GET alpha" "value_alpha" "${resp}"
 done
 
@@ -188,11 +204,15 @@ check "At least one surviving node responds" "PONG" \
 echo ""
 echo "── Phase 4: Data consistency after failover ─────────────"
 
-sleep 0.5
 for key in alpha beta gamma; do
     for port in 7101 7102 7103; do
         [ "${port}" = "${LEADER_PORT}" ] && continue
-        resp=$(kv_cmd "${port}" "GET ${key}" 2>/dev/null || echo "(node down)")
+        # Poll until the key is visible (replication may still be catching up)
+        if wait_for_key "${port}" "${key}" "value_${key}"; then
+            resp="value_${key}"
+        else
+            resp=$(kv_cmd "${port}" "GET ${key}" 2>/dev/null || echo "(node down)")
+        fi
         if [ "${resp}" != "(node down)" ] && [ "${resp}" != "(timeout)" ]; then
             check "POST-FAILOVER :${port} GET ${key}" "value_${key}" "${resp}"
             break
