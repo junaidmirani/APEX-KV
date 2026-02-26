@@ -1,17 +1,5 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// apex/wal.hpp  —  §9 Write-Ahead Log  §11 LogEntry
-//
-//  NEW in this version vs original:
-//   • WAL group-commit: batch multiple entries per fdatasync (large perf win).
-//     Configurable via flush_interval_ms and max_batch_size.
-//   • Durability modes:
-//       unsafe  — no fsync (highest throughput, data loss on crash)
-//       durable — fdatasync on leader commit (default, correct)
-//       strict  — fdatasync on every follower append (strongest guarantee)
-//   • Reduced mutex contention: iovec is prepared off-lock; lock only for
-//     the writev+fdatasync critical section.
-// ─────────────────────────────────────────────────────────────────────────────
 #pragma once
+#include <future> 
 #include "protocol.hpp"
 #include "common.hpp"
 
