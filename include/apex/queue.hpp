@@ -1,6 +1,7 @@
 #pragma once
 #include "common.hpp"
 
+template<typename T>
 class MpscQueue {
     struct APEX_CL_ALIGNED Node {
         std::atomic<Node*> next{nullptr};
