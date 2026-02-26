@@ -8,7 +8,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ── Compiler flags ────────────────────────────────────────────────────────────
 add_compile_options(
     -Wall -Wextra -Wpedantic
-    -Wno-gnu-anonymous-struct
+    $<$<CXX_COMPILER_ID:Clang>:-Wno-gnu-anonymous-struct>
     $<$<CONFIG:Release>:-O3>
     $<$<CONFIG:Release>:-march=native>
     $<$<CONFIG:Release>:-DNDEBUG>
