@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APEX-KV Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149;
+    --font: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 16px; font-weight: 600; letter-spacing: .5px; }
+  header .badge { background: #238636; color: #3fb950; border: 1px solid #2ea043; border-radius: 12px; padding: 2px 10px; font-size: 11px; }
+  .layout { display: grid; grid-template-columns: 280px 1fr; gap: 0; height: calc(100vh - 49px); }
+  .sidebar { background: var(--surface); border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; }
+  .main { padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 16px; }
+  h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 10px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .node-card { border-radius: 6px; padding: 12px; margin-bottom: 8px; cursor: pointer; border: 1px solid var(--border); transition: border-color .15s; }
+  .node-card:hover { border-color: var(--accent); }
+  .node-card.leader { border-color: var(--green); }
+  .node-card.dead { opacity: .5; border-color: var(--red); }
+  .node-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .node-name { font-weight: 600; }
+  .badge-role { border-radius: 10px; padding: 1px 8px; font-size: 10px; font-weight: 600; letter-spacing: .5px; }
+  .badge-leader   { background: #0d2a1a; color: var(--green); border: 1px solid var(--green); }
+  .badge-follower { background: #1c2333; color: var(--accent); border: 1px solid var(--accent); }
+  .badge-dead     { background: #2d0f0d; color: var(--red);   border: 1px solid var(--red);   }
+  .node-stat { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-top: 3px; }
+  .node-stat span:last-child { color: var(--text); }
+  .metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .metric-box { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 12px; }
+  .metric-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .8px; }
+  .metric-value { font-size: 22px; font-weight: 700; color: var(--text); margin: 4px 0; }
+  .metric-unit  { color: var(--muted); font-size: 10px; }
+  .chart-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .latency-bar-wrap { margin-top: 12px; }
+  .lat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .lat-label { width: 42px; color: var(--muted); font-size: 11px; text-align: right; flex-shrink: 0; }
+  .lat-bar-bg { flex: 1; background: #0d1117; border-radius: 3px; height: 14px; overflow: hidden; }
+  .lat-bar { height: 100%; border-radius: 3px; transition: width .5s ease; }
+  .lat-val { width: 56px; text-align: right; font-size: 11px; color: var(--text); flex-shrink: 0; }
+  .kv-console { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; }
+  .kv-console-output { padding: 12px; height: 200px; overflow-y: auto; font-size: 12px; line-height: 1.6; }
+  .kv-console-input { display: flex; border-top: 1px solid var(--border); }
+  .kv-console-input span { padding: 8px 10px; color: var(--green); border-right: 1px solid var(--border); flex-shrink: 0; }
+  .kv-console-input input { flex: 1; background: transparent; border: none; outline: none; color: var(--text); font-family: var(--font); font-size: 12px; padding: 8px 10px; }
+  .log-line { line-height: 1.8; font-size: 11px; border-bottom: 1px solid #1c2333; padding: 2px 0; }
+  .log-info  { color: var(--green);  }
+  .log-warn  { color: var(--yellow); }
+  .log-error { color: var(--red);    }
+  .log-debug { color: var(--muted);  }
+  .throughput-canvas { width: 100%; height: 80px; display: block; }
+  .conn-indicator { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .conn-ok   { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .conn-err  { background: var(--red);   box-shadow: 0 0 6px var(--red);   }
+  .refresh-btn { background: none; border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-family: var(--font); font-size: 11px; }
+  .refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .out-ok  { color: var(--green);  }
+  .out-err { color: var(--red);    }
+  .out-val { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⬡ APEX-KV</h1>
+  <span class="badge">v2.0</span>
+  <span style="color:var(--muted);margin-left:auto;font-size:11px">
+    <span class="conn-indicator" id="conn-dot"></span>
+    <span id="conn-label">Connecting...</span>
+  </span>
+  <button class="refresh-btn" onclick="refresh()">↻ Refresh</button>
+</header>
+
+<div class="layout">
+  <!-- Sidebar: cluster nodes -->
+  <div class="sidebar">
+    <h2>Cluster Nodes</h2>
+    <div id="nodes-list"></div>
+
+    <hr style="border:none;border-top:1px solid var(--border);margin:16px 0">
+    <h2>Configuration</h2>
+    <div style="color:var(--muted);font-size:11px;line-height:1.8">
+      <div style="margin-bottom:6px">
+        <label>Node endpoints</label>
+        <input id="node-endpoints" value="127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003"
+               style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:5px 8px;font-family:var(--font);font-size:11px;margin-top:4px">
+      </div>
+      <div>Poll interval
+        <select id="poll-interval" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 6px;font-family:var(--font);font-size:11px;margin-left:6px">
+          <option value="1000">1s</option>
+          <option value="2000" selected>2s</option>
+          <option value="5000">5s</option>
+          <option value="10000">10s</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div class="main">
+    <!-- Throughput chart -->
+    <div class="card">
+      <div class="section-header">
+        <h2>Throughput (ops/s)</h2>
+        <span id="tput-now" style="font-size:18px;font-weight:700;color:var(--green)">—</span>
+      </div>
+      <canvas id="tput-canvas" class="throughput-canvas" height="80"></canvas>
+    </div>
+
+    <div class="chart-row">
+      <!-- Metrics -->
+      <div class="card">
+        <h2 style="margin-bottom:12px">Operations</h2>
+        <div class="metrics-grid" id="metrics-grid">
+          <div class="metric-box"><div class="metric-label">GET</div><div class="metric-value" id="m-get">—</div></div>
+          <div class="metric-box"><div class="metric-label">PUT</div><div class="metric-value" id="m-put">—</div></div>
+          <div class="metric-box"><div class="metric-label">Elections</div><div class="metric-value" id="m-elec">—</div></div>
+          <div class="metric-box"><div class="metric-label">Commits</div><div class="metric-value" id="m-commit">—</div></div>
+        </div>
+      </div>
+
+      <!-- Latency bars -->
+      <div class="card">
+        <h2>GET Latency</h2>
+        <div class="latency-bar-wrap" id="lat-bars">
+          <div class="lat-row"><div class="lat-label">p50</div><div class="lat-bar-bg"><div class="lat-bar" id="lb-p50" style="background:var(--green);width:0%"></div></div><div class="lat-val" id="lv-p50">—</div></div>
+          <div class="lat-row"><div class="lat-label">p95</div><div class="lat-bar-bg"><div class="lat-bar" id="lb-p95" style="background:var(--yellow);width:0%"></div></div><div class="lat-val" id="lv-p95">—</div></div>
+          <div class="lat-row"><div class="lat-label">p99</div><div class="lat-bar-bg"><div class="lat-bar" id="lb-p99" style="background:var(--red);width:0%"></div></div><div class="lat-val" id="lv-p99">—</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- KV Console -->
+    <div class="card">
+      <h2 style="margin-bottom:12px">KV Console</h2>
+      <div class="kv-console">
+        <div class="kv-console-output" id="console-out">
+          <div style="color:var(--muted)">APEX-KV console — commands: get &lt;key&gt;  put &lt;key&gt; &lt;val&gt;  del &lt;key&gt;  ping  metrics</div>
+        </div>
+        <div class="kv-console-input">
+          <span>apex&gt;</span>
+          <input id="console-in" placeholder="get mykey" autocomplete="off" autofocus>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log stream -->
+    <div class="card">
+      <div class="section-header">
+        <h2>Event Log</h2>
+        <button class="refresh-btn" onclick="clearLog()">Clear</button>
+      </div>
+      <div id="log-stream" style="height:150px;overflow-y:auto;font-size:11px"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+const state = {
+  nodes: [],
+  tputHistory: new Array(60).fill(0),
+  prevOps: 0,
+  lastPoll: Date.now(),
+};
+
+// ── Canvas chart ───────────────────────────────────────────────────────────────
+const canvas = document.getElementById('tput-canvas');
+const ctx    = canvas.getContext('2d');
+
+function drawChart() {
+  const dpr = window.devicePixelRatio || 1;
+  const W   = canvas.clientWidth  * dpr;
+  const H   = canvas.clientHeight * dpr;
+  canvas.width  = W; canvas.height = H;
+  ctx.scale(dpr, dpr);
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, w, h);
+
+  const data = state.tputHistory;
+  const max  = Math.max(...data, 1);
+  const step = w / (data.length - 1);
+
+  ctx.strokeStyle = '#3fb950';
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  data.forEach((v, i) => {
+    const x = i * step, y = h - (v / max) * (h - 8) - 4;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Fill
+  ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+  ctx.fillStyle = 'rgba(63,185,80,.12)';
+  ctx.fill();
+
+  // Grid lines
+  ctx.strokeStyle = '#1c2333'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = h - (i / 4) * (h - 8) - 4;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    if (i > 0) {
+      ctx.fillStyle = '#8b949e'; ctx.font = '9px monospace';
+      ctx.fillText(fmt(max * i / 4), 4, y - 2);
+    }
+  }
+}
+
+// ── Simulated polling (replace with real WebSocket/SSE in production) ──────────
+// In production, APEX-KV would expose a /metrics HTTP endpoint; here we
+// simulate with random but realistic data until that's wired up.
+function simulateMetrics(nodeIndex) {
+  const roles  = ['leader', 'follower', 'follower'];
+  const isLeader = nodeIndex === 0;
+  return {
+    role:        roles[nodeIndex],
+    isLeader,
+    alive:       true,
+    ops_get:     Math.floor(Math.random() * 500000 + 100000),
+    ops_put:     Math.floor(Math.random() * 200000 + 50000),
+    elections:   Math.floor(Math.random() * 5),
+    commits:     Math.floor(Math.random() * 700000 + 100000),
+    lat_p50_us:  Math.floor(Math.random() * 200 + 50),
+    lat_p95_us:  Math.floor(Math.random() * 800 + 200),
+    lat_p99_us:  Math.floor(Math.random() * 2000 + 500),
+  };
+}
+
+async function fetchNodeMetrics(host, port) {
+  // Real implementation: fetch(`http://${host}:${port}/metrics`) and parse Prometheus text
+  // Simulated for demo purposes:
+  return simulateMetrics(parseInt(port) - 7001);
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────────
+function renderNodes(nodes) {
+  const el = document.getElementById('nodes-list');
+  el.innerHTML = nodes.map((n, i) => {
+    const roleClass = n.alive ? (n.isLeader ? 'leader' : '') : 'dead';
+    const roleBadge = n.alive ? (n.isLeader
+      ? '<span class="badge-role badge-leader">★ LEADER</span>'
+      : '<span class="badge-role badge-follower">FOLLOWER</span>')
+      : '<span class="badge-role badge-dead">DEAD</span>';
+    return `<div class="node-card ${roleClass}" onclick="selectNode(${i})">
+      <div class="node-header">
+        <span class="node-name">Node ${i+1}</span>
+        ${roleBadge}
+      </div>
+      <div class="node-stat"><span>Endpoint</span><span>${n.host}:${n.port}</span></div>
+      <div class="node-stat"><span>GET ops</span><span>${fmt(n.ops_get || 0)}</span></div>
+      <div class="node-stat"><span>PUT ops</span><span>${fmt(n.ops_put || 0)}</span></div>
+    </div>`;
+  }).join('');
+}
+
+function renderMetrics(nodes) {
+  const leader = nodes.find(n => n.isLeader) || nodes[0] || {};
+  document.getElementById('m-get').textContent    = fmt(leader.ops_get    || 0);
+  document.getElementById('m-put').textContent    = fmt(leader.ops_put    || 0);
+  document.getElementById('m-elec').textContent   = fmt(leader.elections  || 0);
+  document.getElementById('m-commit').textContent = fmt(leader.commits    || 0);
+
+  const p50 = leader.lat_p50_us || 0;
+  const p95 = leader.lat_p95_us || 0;
+  const p99 = leader.lat_p99_us || 0;
+  const maxLat = Math.max(p99, 1);
+  document.getElementById('lv-p50').textContent = `${p50} µs`;
+  document.getElementById('lv-p95').textContent = `${p95} µs`;
+  document.getElementById('lv-p99').textContent = `${p99} µs`;
+  document.getElementById('lb-p50').style.width = `${p50/maxLat*100}%`;
+  document.getElementById('lb-p95').style.width = `${p95/maxLat*100}%`;
+  document.getElementById('lb-p99').style.width = `100%`;
+}
+
+function updateThroughput(nodes) {
+  const totalOps = nodes.reduce((s, n) => s + (n.ops_get||0) + (n.ops_put||0), 0);
+  const now = Date.now();
+  const dt  = (now - state.lastPoll) / 1000;
+  const tps = dt > 0 ? Math.round((totalOps - state.prevOps) / dt) : 0;
+  state.prevOps  = totalOps;
+  state.lastPoll = now;
+  state.tputHistory.push(Math.max(0, tps));
+  state.tputHistory.shift();
+  document.getElementById('tput-now').textContent = fmt(Math.max(0, tps)) + ' ops/s';
+  drawChart();
+}
+
+// ── Polling ────────────────────────────────────────────────────────────────────
+async function refresh() {
+  const endpoints = document.getElementById('node-endpoints').value.split(',').map(e => e.trim());
+  const results   = await Promise.all(endpoints.map(async ep => {
+    const [host, port] = ep.split(':');
+    try {
+      const m = await fetchNodeMetrics(host, parseInt(port));
+      return { host, port: parseInt(port), ...m, alive: true };
+    } catch {
+      return { host, port: parseInt(port), alive: false, isLeader: false, role: 'dead' };
+    }
+  }));
+
+  state.nodes = results;
+  renderNodes(results);
+  renderMetrics(results);
+  updateThroughput(results);
+
+  const alive = results.filter(n => n.alive).length;
+  const dot   = document.getElementById('conn-dot');
+  const label = document.getElementById('conn-label');
+  dot.className   = `conn-indicator ${alive > 0 ? 'conn-ok' : 'conn-err'}`;
+  label.textContent = alive > 0 ? `${alive}/${results.length} nodes up` : 'Cluster unreachable';
+
+  addLog(alive > 0
+    ? `info Polled ${results.length} nodes: ${results.filter(n=>n.isLeader).map(n=>n.host+':'+n.port).join(',')||'no leader'} leads`
+    : `warn No reachable nodes`, alive > 0 ? 'info' : 'warn');
+}
+
+// ── Console ────────────────────────────────────────────────────────────────────
+function consolePrint(html) {
+  const out = document.getElementById('console-out');
+  out.insertAdjacentHTML('beforeend', `<div>${html}</div>`);
+  out.scrollTop = out.scrollHeight;
+}
+
+document.getElementById('console-in').addEventListener('keydown', async e => {
+  if (e.key !== 'Enter') return;
+  const line = e.target.value.trim(); e.target.value = '';
+  if (!line) return;
+  consolePrint(`<span style="color:var(--green)">apex&gt;</span> ${escHtml(line)}`);
+
+  const parts = line.split(/\s+/);
+  const cmd   = (parts[0]||'').toLowerCase();
+
+  // All real commands would go via WebSocket to a local proxy.
+  // For demo: simulate responses.
+  if (cmd === 'ping') { consolePrint('<span class="out-ok">PONG</span>'); }
+  else if (cmd === 'get') {
+    const key = parts[1];
+    if (!key) { consolePrint('<span class="out-err">usage: get &lt;key&gt;</span>'); return; }
+    consolePrint(`<span class="out-val">"demo-value-for-${escHtml(key)}"</span> <span style="color:var(--muted)">(simulated)</span>`);
+  }
+  else if (cmd === 'put') { consolePrint('<span class="out-ok">OK</span>'); }
+  else if (cmd === 'del') { consolePrint('<span class="out-ok">OK</span>'); }
+  else if (cmd === 'metrics') {
+    const m = state.nodes[0] || {};
+    consolePrint(`<pre style="color:var(--accent)">${JSON.stringify({ops_get:m.ops_get,ops_put:m.ops_put,lat_p99_us:m.lat_p99_us},null,2)}</pre>`);
+  }
+  else { consolePrint(`<span class="out-err">Unknown: ${escHtml(cmd)}</span>`); }
+});
+
+// ── Log stream ─────────────────────────────────────────────────────────────────
+function addLog(msg, level = 'info') {
+  const el = document.getElementById('log-stream');
+  const ts = new Date().toISOString().slice(11,23);
+  el.insertAdjacentHTML('afterbegin',
+    `<div class="log-line log-${level}"><span style="color:var(--muted)">${ts}</span>  ${escHtml(msg)}</div>`);
+  while (el.children.length > 100) el.removeChild(el.lastChild);
+}
+
+function clearLog() { document.getElementById('log-stream').innerHTML = ''; }
+
+// ── Utils ──────────────────────────────────────────────────────────────────────
+function fmt(n) {
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
+  return String(n);
+}
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function selectNode(i) { addLog(`Selected node ${i+1} (${state.nodes[i]?.host}:${state.nodes[i]?.port})`); }
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+refresh();
+let pollTimer = setInterval(refresh, 2000);
+document.getElementById('poll-interval').addEventListener('change', e => {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(refresh, parseInt(e.target.value));
+});
+window.addEventListener('resize', drawChart);
+</script>
+</body>
+</html>

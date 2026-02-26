@@ -1,0 +1,138 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  release:
+    types: [created]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  # ── Build + unit tests ──────────────────────────────────────────────────────
+  build-and-test:
+    name: Build & Unit Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        compiler: [g++, clang++]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y cmake build-essential
+
+      - name: Configure
+        run: |
+          CXX=${{ matrix.compiler }} cmake -B build \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_CXX_FLAGS="-O2"
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Unit Tests
+        run: ./build/kv --test
+
+      - name: Upload binary
+        if: matrix.os == 'ubuntu-22.04' && matrix.compiler == 'g++'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kv-linux-x86_64
+          path: build/kv
+
+  # ── Integration tests ───────────────────────────────────────────────────────
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: kv-linux-x86_64
+          path: build/
+
+      - name: Make executable
+        run: chmod +x build/kv
+
+      - name: Run integration tests
+        run: |
+          chmod +x scripts/integration-test.sh
+          APEX_BINARY=./build/kv bash scripts/integration-test.sh
+
+  # ── Benchmark (informational) ───────────────────────────────────────────────
+  benchmark:
+    name: Benchmark
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: kv-linux-x86_64
+          path: build/
+
+      - name: Make executable
+        run: chmod +x build/kv
+
+      - name: Start 3-node cluster and benchmark
+        run: |
+          chmod +x dev-run.sh
+          APEX_BINARY=./build/kv ./dev-run.sh start
+          sleep 2
+          ./build/kv --bench 127.0.0.1:7001 --threads 4 --ops 50000 | tee bench_results.txt
+          python3 scripts/bench-graph.py --file bench_results.txt --results bench_results.json
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            bench_results.txt
+            bench_results.json
+
+  # ── Static release binaries ─────────────────────────────────────────────────
+  release:
+    name: Release Binaries
+    runs-on: ubuntu-22.04
+    needs: [build-and-test, integration]
+    if: github.event_name == 'release'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build static binaries
+        run: |
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          chmod +x release.sh
+          ./release.sh ${{ github.event.release.tag_name }}
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/apex-kv-*.tar.gz
+            dist/apex-kv-*-linux-x86_64
+            dist/apex-kv-*-linux-arm64
+            dist/apex-kv-*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push Docker image
+        run: |
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          docker push apex-kv:${{ github.event.release.tag_name }}
+          docker push apex-kv:latest
