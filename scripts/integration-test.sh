@@ -34,8 +34,7 @@ check() {
 
 kv_cmd() {
     # The REPL outputs lines like:  apex> PONG
-    # Keep only lines that start with "apex> ", strip that prefix,
-    # then drop blank lines (the bare "apex> " prompt at exit).
+    # Keep lines starting with "apex> ", strip the prefix, drop blanks.
     local port="$1" cmd="$2"
     echo "${cmd}" | timeout 3 "${BINARY}" --client "127.0.0.1:${port}" 2>/dev/null \
         | grep '^apex> '    \
@@ -46,7 +45,7 @@ kv_cmd() {
 }
 
 wait_for_node() {
-    # Poll until PING succeeds or timeout (~6s)
+    # Poll until PING succeeds or ~6s timeout
     local port="$1" retries=20
     while (( retries-- > 0 )); do
         local resp
@@ -58,7 +57,7 @@ wait_for_node() {
 }
 
 wait_for_key() {
-    # Poll until GET <key> returns <expected> on <port>, or timeout (~6s)
+    # Poll until GET <key> == <expected> on <port>, or ~6s timeout
     local port="$1" key="$2" expected="$3" retries=30
     while (( retries-- > 0 )); do
         local resp
@@ -67,6 +66,19 @@ wait_for_key() {
         sleep 0.2
     done
     return 1
+}
+
+find_leader() {
+    # Returns the port of the node whose log mentions LEADER, or ""
+    for pid_port in "${PID1}:7101" "${PID2}:7102" "${PID3}:7103"; do
+        local pid="${pid_port%%:*}" port="${pid_port##*:}"
+        local lognum="${port: -1}"
+        if grep -q "LEADER" "${WAL_DIR}/logs/node${lognum}.log" 2>/dev/null; then
+            echo "${port}"
+            return 0
+        fi
+    done
+    echo ""
 }
 
 cleanup() {
@@ -132,64 +144,71 @@ if [ "${ALL_UP}" = false ]; then
     exit 1
 fi
 
-echo ""
-echo "── Phase 2: Write data ──────────────────────────────────"
+# Identify leader — try up to 3s for election to show up in logs
+LEADER_PORT=""
+for _ in 1 2 3 4 5 6; do
+    LEADER_PORT=$(find_leader)
+    [ -n "${LEADER_PORT}" ] && break
+    sleep 0.5
+done
 
-# Write several keys — try each node in turn until one accepts (leader) or redirects
+if [ -z "${LEADER_PORT}" ]; then
+    echo -e "  ${YLW}Leader not found in logs yet — defaulting to 7101${RST}"
+    LEADER_PORT="7101"
+fi
+info "Leader identified: :${LEADER_PORT}"
+
+echo ""
+echo "── Phase 2: Write data via leader ───────────────────────"
+
+# Send all writes directly to the leader — avoids AP-fallback on followers
+# and avoids redirect round-trips that could land on wrong node.
+WROTE_OK=true
 for key in alpha beta gamma delta epsilon; do
-    written=false
-    for port in 7101 7102 7103; do
-        resp=$(kv_cmd "${port}" "PUT ${key} value_${key}" 2>/dev/null || echo "(error)")
-        if [[ "${resp}" == "OK" ]] || [[ "${resp}" == *"redirect"* ]]; then
-            written=true
-            break
-        fi
-    done
-    if [ "${written}" = false ]; then
-        echo -e "  ${YLW}Warning: could not write key '${key}'${RST}"
+    resp=$(kv_cmd "${LEADER_PORT}" "PUT ${key} value_${key}" 2>/dev/null || echo "(error)")
+    if [[ "${resp}" != "OK" ]]; then
+        echo -e "  ${YLW}Warning: PUT ${key} on leader returned: ${resp}${RST}"
+        WROTE_OK=false
     fi
 done
 
-echo "  Wrote 5 keys to cluster"
-sleep 1.0   # Give Raft time to commit + apply on all nodes
+if [ "${WROTE_OK}" = true ]; then
+    echo "  Wrote 5 keys to leader (:${LEADER_PORT})"
+fi
 
-# Verify reads from all nodes — poll until replication catches up (up to 6s)
-for port in 7101 7102 7103; do
-    if wait_for_key "${port}" "alpha" "value_alpha"; then
-        resp="value_alpha"
+# Verify the leader immediately has the data (committed + applied)
+if wait_for_key "${LEADER_PORT}" "alpha" "value_alpha"; then
+    resp="value_alpha"
+else
+    resp=$(kv_cmd "${LEADER_PORT}" "GET alpha")
+fi
+check "Leader :${LEADER_PORT} GET alpha after write" "value_alpha" "${resp}"
+
+# Verify two more keys on the leader
+for key in beta gamma; do
+    if wait_for_key "${LEADER_PORT}" "${key}" "value_${key}"; then
+        resp="value_${key}"
     else
-        resp=$(kv_cmd "${port}" "GET alpha")
+        resp=$(kv_cmd "${LEADER_PORT}" "GET ${key}")
     fi
-    check "Node :${port} GET alpha" "value_alpha" "${resp}"
+    check "Leader :${LEADER_PORT} GET ${key} after write" "value_${key}" "${resp}"
 done
 
 echo ""
 echo "── Phase 3: Leader failover ─────────────────────────────"
 
-# Find leader by scanning structured JSON logs for "LEADER"
-LEADER_PID=""
-LEADER_PORT=""
-for pid_port in "${PID1}:7101" "${PID2}:7102" "${PID3}:7103"; do
-    pid="${pid_port%%:*}"
-    port="${pid_port##*:}"
-    lognum="${port: -1}"
-    if grep -q "LEADER" "${WAL_DIR}/logs/node${lognum}.log" 2>/dev/null; then
-        LEADER_PID="${pid}"
-        LEADER_PORT="${port}"
-        break
-    fi
-done
-
-if [ -z "${LEADER_PID}" ]; then
-    echo -e "  ${YLW}Could not identify leader from logs, defaulting to node1${RST}"
-    LEADER_PID="${PID1}"
-    LEADER_PORT="7101"
-fi
+# Map leader port → PID
+case "${LEADER_PORT}" in
+    7101) LEADER_PID="${PID1}" ;;
+    7102) LEADER_PID="${PID2}" ;;
+    7103) LEADER_PID="${PID3}" ;;
+    *)    LEADER_PID="${PID1}" ;;
+esac
 
 echo "  Killing leader (PID ${LEADER_PID}, port ${LEADER_PORT})..."
 kill "${LEADER_PID}" 2>/dev/null || true
 
-echo "  Waiting for re-election (up to 6s)..."
+echo "  Waiting for re-election on surviving nodes (up to 6s)..."
 SURVIVING_PORT=""
 for port in 7101 7102 7103; do
     [ "${port}" = "${LEADER_PORT}" ] && continue
@@ -198,16 +217,24 @@ for port in 7101 7102 7103; do
     fi
 done
 
-check "At least one surviving node responds" "PONG" \
+check "At least one surviving node responds to PING" "PONG" \
     "$(kv_cmd "${SURVIVING_PORT:-7102}" "PING")"
 
 echo ""
-echo "── Phase 4: Data consistency after failover ─────────────"
+echo "── Phase 4: Data consistency on survivor ────────────────"
+#
+# This is the critical Raft durability check:
+# The killed leader had committed entries.  A surviving node that
+# participated in that quorum must be able to serve those reads after
+# it (or another survivor) becomes the new leader.
+#
+
+sleep 1.0   # Allow new leader election + log catch-up
 
 for key in alpha beta gamma; do
+    CHECKED=false
     for port in 7101 7102 7103; do
-        [ "${port}" = "${LEADER_PORT}" ] && continue
-        # Poll until the key is visible (replication may still be catching up)
+        [ "${port}" = "${LEADER_PORT}" ] && continue  # skip dead node
         if wait_for_key "${port}" "${key}" "value_${key}"; then
             resp="value_${key}"
         else
@@ -215,9 +242,14 @@ for key in alpha beta gamma; do
         fi
         if [ "${resp}" != "(node down)" ] && [ "${resp}" != "(timeout)" ]; then
             check "POST-FAILOVER :${port} GET ${key}" "value_${key}" "${resp}"
+            CHECKED=true
             break
         fi
     done
+    if [ "${CHECKED}" = false ]; then
+        echo -e "  ${RED}FAIL${RST}  POST-FAILOVER GET ${key} — all surviving nodes unreachable"
+        ((FAIL++)) || true
+    fi
 done
 
 echo ""
